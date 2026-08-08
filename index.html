@@ -212,6 +212,15 @@
   .btn.primary:hover{
     background:rgba(201,162,75,0.12);
   }
+  .btn:disabled{
+    opacity:0.32;
+    cursor:not-allowed;
+  }
+  .btn:disabled:hover{
+    border-color:var(--line-strong);
+    color:var(--paper);
+    background:transparent;
+  }
 
   /* ---- number plate, bottom-center ---- */
   #plate{
@@ -297,6 +306,7 @@
 
 <div class="hud" id="controls">
   <button class="btn" id="btn-reset">Reset</button>
+  <button class="btn" id="btn-solve" disabled>Solve</button>
   <button class="btn primary" id="btn-scramble">Scramble</button>
 </div>
 
@@ -595,6 +605,7 @@ buildCube();
 // ---------------------------------------------------------------
 let animating = false;
 const moveQueue = [];
+const history = []; // every applied move {axis, layerValue, dir}, in order — lets Solve undo back to solved
 
 function integerRotate(pos, axis, dir){
   const {x,y,z} = pos;
@@ -622,7 +633,7 @@ function snapTransform(group){
   group.quaternion.setFromEuler(new THREE.Euler(snap(e.x), snap(e.y), snap(e.z), 'XYZ'));
 }
 
-function rotateLayer(axis, layerValue, dir, { countMove=true, duration=TURN_MS } = {}){
+function rotateLayer(axis, layerValue, dir, { countMove=true, duration=TURN_MS, record=true } = {}){
   return new Promise(resolve => {
     const affected = cubies.filter(c => c.pos[axis] === layerValue);
     const pivot = new THREE.Group();
@@ -646,6 +657,10 @@ function rotateLayer(axis, layerValue, dir, { countMove=true, duration=TURN_MS }
           c.pos = integerRotate(c.pos, axis, dir);
         }
         cubeRoot.remove(pivot);
+        if(record){
+          history.push({ axis, layerValue, dir });
+          updateSolveButtonState();
+        }
         if(countMove){
           moveCount++;
           updateStats();
@@ -657,6 +672,18 @@ function rotateLayer(axis, layerValue, dir, { countMove=true, duration=TURN_MS }
     }
     requestAnimationFrame(step);
   });
+}
+
+// undoes every recorded move, in reverse, animating the cube back to solved
+async function solveCube(){
+  if(history.length === 0) return;
+  clearSolvedBanner();
+  const moves = history.splice(0, history.length).reverse();
+  updateSolveButtonState();
+  for(const m of moves){
+    await rotateLayer(m.axis, m.layerValue, -m.dir, { countMove:false, record:false, duration:150 });
+  }
+  checkSolved();
 }
 
 async function queueMove(axis, layerValue, dir, opts){
@@ -675,18 +702,20 @@ async function queueMove(axis, layerValue, dir, opts){
 // ---------------------------------------------------------------
 function checkSolved(){
   const worldNormal = new THREE.Vector3();
+  const groupQuat = new THREE.Quaternion();
   for(const f of FACES){
     const axisVec = AXIS_VEC[f.axis].clone().multiplyScalar(f.sign);
     const slots = cubies.filter(c => c.pos[f.axis] === f.sign);
     let refColor = null;
     for(const c of slots){
+      // stickers keep a fixed local rotation relative to their cubie for life —
+      // only the cubie group's world quaternion changes as layers turn, so that's
+      // what localNormal (cached in the cubie's local space) must be rotated by.
+      c.group.getWorldQuaternion(groupQuat);
       let best = null, bestDot = -Infinity;
       for(const child of c.group.children){
         if(!child.userData.face) continue;
-        worldNormal.set(0,0,1).applyQuaternion(child.getWorldQuaternion(new THREE.Quaternion()));
-        // sticker's own local normal is +Z pre-rotation only for F/B; recompute generically:
-        worldNormal.copy(child.userData.localNormal || new THREE.Vector3(0,0,1));
-        worldNormal.applyQuaternion(child.getWorldQuaternion(new THREE.Quaternion()));
+        worldNormal.copy(child.userData.localNormal).applyQuaternion(groupQuat);
         const dot = worldNormal.dot(axisVec);
         if(dot > bestDot){ bestDot = dot; best = child; }
       }
@@ -720,6 +749,10 @@ function onSolved(){
 function clearSolvedBanner(){
   solvedShown = false;
   document.getElementById('solved').classList.remove('show');
+}
+
+function updateSolveButtonState(){
+  document.getElementById('btn-solve').disabled = history.length === 0;
 }
 
 // ---------------------------------------------------------------
@@ -866,12 +899,20 @@ document.getElementById('btn-scramble').addEventListener('click', () => {
   scramble().finally(() => { animating = false; });
 });
 
+document.getElementById('btn-solve').addEventListener('click', () => {
+  if(animating || history.length === 0) return;
+  animating = true;
+  solveCube().finally(() => { animating = false; });
+});
+
 document.getElementById('btn-reset').addEventListener('click', () => {
   if(animating) return;
   buildCube();
   patchAllNormals();
   clearSolvedBanner();
   resetStats();
+  history.length = 0;
+  updateSolveButtonState();
 });
 
 function patchAllNormals(){
