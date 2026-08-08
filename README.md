@@ -2,11 +2,13 @@
 
 An interactive 3×3×3 Rubik's Cube built with [Three.js](https://threejs.org/) — a single self-contained `index.html`, no build step, no dependencies to install.
 
+**Play it live: [helmutqualtinger.github.io/Rubik](https://helmutqualtinger.github.io/Rubik/)**
+
 ![Screenshot of the Rubik's Cube app](screenshot.png)
 
 ## Run it
 
-Just open `index.html` in a modern browser. That's it — Three.js and its addons load from a CDN via an import map, so there's nothing to install or build.
+Open the [live version](https://helmutqualtinger.github.io/Rubik/), or open `index.html` locally in a modern browser. That's it — Three.js and its addons load from a CDN via an import map, so there's nothing to install or build.
 
 ## Controls
 
