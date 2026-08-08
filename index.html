@@ -838,6 +838,38 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   controls.autoRotate = false;
 });
 
+/*
+ * Turning a face by dragging it is ambiguous until you look at *which way*
+ * the mouse moved: a face can only be turned about the two axes that lie
+ * in its own plane (the two axes other than its outward normal — grab the
+ * +Z face and only the X and Y layers passing through it can turn), and
+ * each of those two axes could be spun either +90° or -90°. So for a drag
+ * starting on a given face we have exactly 4 candidate turns, and we have
+ * to pick the one whose motion on screen looks most like the drag.
+ *
+ * For each of the two candidate axes:
+ *   1. Compute the 3D direction a point at the grab location would move if
+ *      that axis were spun by a small *positive* angle: tangent = axis × normal.
+ *      (Cross product of the spin axis with the face normal gives the
+ *      instantaneous velocity direction for a positive right-hand rotation —
+ *      this is just the physics of rotational motion, v = ω × r, with r
+ *      approximated by the face normal since we only care about direction.)
+ *   2. Project both the grab point and grab point + a small step along that
+ *      tangent through the camera into 2D screen space, and subtract, to get
+ *      what that positive-rotation tangent actually looks like on screen
+ *      from the current camera angle.
+ *   3. Dot that screen-space tangent against the real mouse-drag vector.
+ *      The axis whose tangent best lines up with the drag (largest |dot|)
+ *      is the one the user is turning — and the *sign* of that dot product
+ *      tells us the direction: a positive dot means the drag agrees with
+ *      the positive-rotation tangent (turn +90°), negative means it opposes
+ *      it (turn -90°).
+ *
+ * This resolves the whole gesture from a single sample once the drag clears
+ * a small pixel threshold — no need to track the drag continuously — which
+ * is what gives turns their instant "flick" feel rather than following the
+ * cursor in real time.
+ */
 window.addEventListener('pointermove', (ev) => {
   if(!drag || drag.resolved || animating) return;
   const dx = ev.clientX - drag.screenStart.x;
@@ -857,10 +889,13 @@ window.addEventListener('pointermove', (ev) => {
 
   let bestAxis = candidates[0], bestDot = -Infinity, bestSign = 1;
   for(const axis of candidates){
-    const tangent = AXIS_VEC[axis].clone().cross(normal); // velocity dir for +rotation about axis
+    // 3D velocity direction of the grab point under a small +rotation about `axis`
+    const tangent = AXIS_VEC[axis].clone().cross(normal);
+    // ...seen from the camera, as a 2D direction on screen
     const p1 = drag.point.clone().addScaledVector(tangent, 0.06).project(camera);
     const screen1 = new THREE.Vector2((p1.x*0.5+0.5)*window.innerWidth, (-p1.y*0.5+0.5)*window.innerHeight);
     const screenTangent = screen1.sub(screen0).normalize();
+    // how well that predicted screen motion matches the actual drag
     const dot = screenTangent.dot(mouseDelta);
     if(Math.abs(dot) > Math.abs(bestDot)){ bestDot = dot; bestAxis = axis; bestSign = dot > 0 ? 1 : -1; }
   }
