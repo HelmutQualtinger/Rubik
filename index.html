@@ -724,7 +724,6 @@ buildCube();
 // layer rotation
 // ---------------------------------------------------------------
 let animating = false;
-const moveQueue = [];
 const history = []; // every applied move {axis, layerValue, dir}, in order — lets Solve undo back to solved
 
 function integerRotate(pos, axis, dir){
@@ -753,7 +752,7 @@ function snapTransform(group){
   group.quaternion.setFromEuler(new THREE.Euler(snap(e.x), snap(e.y), snap(e.z), 'XYZ'));
 }
 
-function rotateLayer(axis, layerValue, dir, { countMove=true, duration=TURN_MS, record=true } = {}){
+function rotateLayer(axis, layerValue, dir, { duration=TURN_MS, record=true } = {}){
   return new Promise(resolve => {
     const affected = cubies.filter(c => c.pos[axis] === layerValue);
     const pivot = new THREE.Group();
@@ -782,12 +781,6 @@ function rotateLayer(axis, layerValue, dir, { countMove=true, duration=TURN_MS, 
           history.push({ axis, layerValue, dir });
           updateSolveButtonState();
         }
-        if(countMove){
-          moveCount++;
-          updateStats();
-          maybeStartTimer();
-          checkSolved();
-        }
         resolve();
       }
     }
@@ -802,20 +795,9 @@ async function solveCube(){
   const moves = history.splice(0, history.length).reverse();
   updateSolveButtonState();
   for(const m of moves){
-    await rotateLayer(m.axis, m.layerValue, -m.dir, { countMove:false, record:false, duration:230 });
+    await rotateLayer(m.axis, m.layerValue, -m.dir, { record:false, duration:230 });
   }
   checkSolved();
-}
-
-async function queueMove(axis, layerValue, dir, opts){
-  moveQueue.push({axis, layerValue, dir, opts});
-  if(animating) return;
-  animating = true;
-  while(moveQueue.length){
-    const m = moveQueue.shift();
-    await rotateLayer(m.axis, m.layerValue, m.dir, m.opts);
-  }
-  animating = false;
 }
 
 // ---------------------------------------------------------------
@@ -918,7 +900,9 @@ function resetStats(){
 const raycaster = new THREE.Raycaster();
 const ndc = new THREE.Vector2();
 
-let drag = null; // { cubie, normalAxis, normalSign, worldPoint, screenStart, resolved }
+// while a grab is live: { cubie, normalAxis, normalSign, point, screenStart, resolved,
+// + once resolved: axis, tangentDir, pixelsPerQuarterTurn, layerValue, affected, pivot, angle }
+let drag = null;
 
 function getPointerNDC(ev){
   ndc.x = (ev.clientX / window.innerWidth) * 2 - 1;
@@ -943,8 +927,31 @@ function pickCubie(ev){
   return { cubie, axis, sign, point: hit.point.clone() };
 }
 
+function projectToScreen(worldPoint){
+  const p = worldPoint.clone().project(camera);
+  return new THREE.Vector2((p.x*0.5+0.5)*window.innerWidth, (-p.y*0.5+0.5)*window.innerHeight);
+}
+
+// How many screen pixels a drag needs to cover a quarter-turn. Deliberately
+// *not* calibrated from the exact grabbed point's own projected 90° arc —
+// points near a rotation axis, or whose motion is mostly toward/away from
+// the camera rather than across the screen, would give wildly inconsistent
+// (sometimes near-zero) pixel distances for the same physical turn. Instead
+// this scales off camera distance and viewport size against one fixed
+// "typical" radius a grabbed sticker sits at from its rotation axis, which
+// stays smooth and consistent across every grab point and zoom level.
+const TYPICAL_GRAB_RADIUS = 1.3;
+function pixelsPerQuarterTurn(){
+  const dist = camera.position.distanceTo(controls.target);
+  const vFov = camera.fov * Math.PI/180;
+  const pxPerWorldUnit = (window.innerHeight/2) / (dist * Math.tan(vFov/2));
+  return pxPerWorldUnit * TYPICAL_GRAB_RADIUS * Math.SQRT2;
+}
+
 renderer.domElement.addEventListener('pointerdown', (ev) => {
   ensureAudio();
+  controls.autoRotate = false;
+  if(animating) return; // don't start a new grab mid-scramble/solve/another turn
   const pick = pickCubie(ev);
   if(pick){
     drag = {
@@ -958,17 +965,15 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
     controls.enabled = false;
     document.body.classList.add('on-piece');
   }
-  controls.autoRotate = false;
 });
 
 /*
  * Turning a face by dragging it is ambiguous until you look at *which way*
  * the mouse moved: a face can only be turned about the two axes that lie
  * in its own plane (the two axes other than its outward normal — grab the
- * +Z face and only the X and Y layers passing through it can turn), and
- * each of those two axes could be spun either +90° or -90°. So for a drag
- * starting on a given face we have exactly 4 candidate turns, and we have
- * to pick the one whose motion on screen looks most like the drag.
+ * +Z face and only the X and Y layers passing through it can turn). So the
+ * first move past a small pixel threshold has to decide, once, which of
+ * those two axes is being grabbed:
  *
  * For each of the two candidate axes:
  *   1. Compute the 3D direction a point at the grab location would move if
@@ -983,58 +988,114 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
  *      from the current camera angle.
  *   3. Dot that screen-space tangent against the real mouse-drag vector.
  *      The axis whose tangent best lines up with the drag (largest |dot|)
- *      is the one the user is turning — and the *sign* of that dot product
- *      tells us the direction: a positive dot means the drag agrees with
- *      the positive-rotation tangent (turn +90°), negative means it opposes
- *      it (turn -90°).
+ *      is the one being turned.
  *
- * This resolves the whole gesture from a single sample once the drag clears
- * a small pixel threshold — no need to track the drag continuously — which
- * is what gives turns their instant "flick" feel rather than following the
- * cursor in real time.
+ * Once the axis is locked in, the layer's pivot rotation is driven directly
+ * from the live drag every frame, not just that one sample: `tangentDir`
+ * (the winning screen-space tangent above) gives the on-screen direction
+ * that corresponds to spinning the layer positively, so projecting the
+ * *actual* mouse-drag vector onto it turns "pixels dragged" into "how far
+ * around the turn we are." That's calibrated in screen space too — by
+ * projecting an actual +90° rotation of the grab point through the camera
+ * — so a full quarter-turn always lines up with wherever that point
+ * visually ends up, regardless of zoom or viewing angle. Releasing the
+ * pointer snaps forward to the nearest quarter-turn if you dragged past
+ * 45°, or back to where you started otherwise.
  */
 window.addEventListener('pointermove', (ev) => {
-  if(!drag || drag.resolved || animating) return;
+  if(!drag) return;
   const dx = ev.clientX - drag.screenStart.x;
   const dy = ev.clientY - drag.screenStart.y;
-  const dist = Math.hypot(dx, dy);
-  if(dist < 8) return;
 
-  drag.resolved = true;
-  document.body.classList.add('dragging');
+  if(!drag.resolved){
+    if(Math.hypot(dx, dy) < 8) return;
 
-  const normal = AXIS_VEC[drag.normalAxis].clone().multiplyScalar(drag.normalSign);
-  const candidates = ['x','y','z'].filter(a => a !== drag.normalAxis);
+    const normal = AXIS_VEC[drag.normalAxis].clone().multiplyScalar(drag.normalSign);
+    const candidates = ['x','y','z'].filter(a => a !== drag.normalAxis);
+    const mouseDelta = new THREE.Vector2(dx, dy).normalize();
+    const screen0 = projectToScreen(drag.point);
 
-  const mouseDelta = new THREE.Vector2(dx, dy).normalize();
-  const p0 = drag.point.clone().project(camera);
-  const screen0 = new THREE.Vector2((p0.x*0.5+0.5)*window.innerWidth, (-p0.y*0.5+0.5)*window.innerHeight);
+    let bestAxis = candidates[0], bestScore = -Infinity, bestTangentDir = null;
+    for(const axis of candidates){
+      const tangent = AXIS_VEC[axis].clone().cross(normal);
+      const screen1 = projectToScreen(drag.point.clone().addScaledVector(tangent, 0.06));
+      const screenTangent = screen1.clone().sub(screen0).normalize();
+      const dot = screenTangent.dot(mouseDelta);
+      const score = Math.abs(dot); // how well this axis's tangent lines up with the drag, either direction
+      if(score > bestScore){ bestScore = score; bestAxis = axis; bestTangentDir = screenTangent; }
+    }
 
-  let bestAxis = candidates[0], bestDot = -Infinity, bestSign = 1;
-  for(const axis of candidates){
-    // 3D velocity direction of the grab point under a small +rotation about `axis`
-    const tangent = AXIS_VEC[axis].clone().cross(normal);
-    // ...seen from the camera, as a 2D direction on screen
-    const p1 = drag.point.clone().addScaledVector(tangent, 0.06).project(camera);
-    const screen1 = new THREE.Vector2((p1.x*0.5+0.5)*window.innerWidth, (-p1.y*0.5+0.5)*window.innerHeight);
-    const screenTangent = screen1.sub(screen0).normalize();
-    // how well that predicted screen motion matches the actual drag
-    const dot = screenTangent.dot(mouseDelta);
-    if(Math.abs(dot) > Math.abs(bestDot)){ bestDot = dot; bestAxis = axis; bestSign = dot > 0 ? 1 : -1; }
+    drag.pixelsPerQuarterTurn = pixelsPerQuarterTurn();
+
+    drag.resolved = true;
+    drag.axis = bestAxis;
+    drag.tangentDir = bestTangentDir;
+    drag.layerValue = drag.cubie.pos[bestAxis];
+    drag.affected = cubies.filter(c => c.pos[bestAxis] === drag.layerValue);
+    drag.pivot = new THREE.Group();
+    cubeRoot.add(drag.pivot);
+    for(const c of drag.affected) drag.pivot.attach(c.group);
+    drag.angle = 0;
+
+    animating = true; // claim the shared lock so nothing else can turn/scramble mid-drag
+    document.body.classList.add('dragging');
   }
 
-  const layerValue = drag.cubie.pos[bestAxis];
-  clearSolvedBanner();
-  queueMove(bestAxis, layerValue, bestSign, { countMove:true });
+  const along = new THREE.Vector2(dx, dy).dot(drag.tangentDir);
+  drag.angle = THREE.MathUtils.clamp((along / drag.pixelsPerQuarterTurn) * (Math.PI/2), -Math.PI/2, Math.PI/2);
+  drag.pivot.rotation[drag.axis] = drag.angle;
 });
 
 window.addEventListener('pointerup', () => {
-  if(drag){
-    controls.enabled = true;
-  }
-  drag = null;
+  controls.enabled = true;
   document.body.classList.remove('dragging', 'on-piece');
+  if(drag && drag.resolved){
+    const committed = Math.abs(drag.angle) >= Math.PI/4; // past 45° → snap forward, else snap back
+    finishDrag(drag, committed ? (drag.angle > 0 ? 1 : -1) : 0);
+  } else {
+    drag = null;
+  }
 });
+
+// animates the in-progress drag pivot the rest of the way to a full
+// quarter-turn (dir = ±1) or back to its start (dir = 0, a cancelled drag),
+// then bakes the result — mirrors rotateLayer()'s finishing steps, but
+// starting from whatever angle the live drag left off at
+function finishDrag(d, dir){
+  const target = dir * Math.PI/2;
+  const from = d.angle;
+  const remaining = Math.abs(target - from) / (Math.PI/2);
+  const duration = Math.max(70, remaining * 260);
+  const start = performance.now();
+  function ease(t){ return 1 - Math.pow(1-t, 3); }
+  function step(now){
+    const t = Math.min(1, (now-start)/duration);
+    d.pivot.rotation[d.axis] = from + (target-from)*ease(t);
+    if(t < 1){
+      requestAnimationFrame(step);
+      return;
+    }
+    for(const c of d.affected){
+      cubeRoot.attach(c.group);
+      snapTransform(c.group);
+      if(dir !== 0) c.pos = integerRotate(c.pos, d.axis, dir);
+    }
+    cubeRoot.remove(d.pivot);
+    if(dir !== 0){
+      playClick(0.92 + Math.random()*0.16);
+      history.push({ axis: d.axis, layerValue: d.layerValue, dir });
+      updateSolveButtonState();
+      moveCount++;
+      updateStats();
+      maybeStartTimer();
+      clearSolvedBanner();
+      checkSolved();
+    }
+    animating = false;
+    drag = null;
+  }
+  requestAnimationFrame(step);
+}
 
 // ---------------------------------------------------------------
 // scramble / reset
@@ -1047,7 +1108,7 @@ async function scramble(n=22){
     const axis = AXES[Math.floor(Math.random()*3)];
     const layerValue = [-1,0,1][Math.floor(Math.random()*3)];
     const dir = Math.random() < 0.5 ? 1 : -1;
-    await rotateLayer(axis, layerValue, dir, { countMove:false, duration:210 });
+    await rotateLayer(axis, layerValue, dir, { duration:210 });
   }
 }
 
