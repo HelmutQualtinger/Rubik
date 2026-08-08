@@ -20,8 +20,9 @@ Open the [live version](https://helmutqualtinger.github.io/Rubik/), or open `ind
 | **Scramble** button | Randomly mixes the cube |
 | **Solve** button | Animates every move you've made back out, in reverse, until the cube is solved |
 | **Reset** button | Instantly returns to a solved cube and clears history |
+| **Sound** toggle | Mutes/unmutes the turn clicks and solve chime |
 
-The HUD tracks your move count and a timer (starts on your first turn), and shows a "Solved." banner the moment every face matches — orientation-agnostic, so it works correctly no matter how the cube has been scrambled or rotated in view.
+The HUD tracks your move count and a timer (starts on your first turn), and shows a "Solved." banner the moment every face matches — orientation-agnostic, so it works correctly no matter how the cube has been scrambled or rotated in view. Every turn plays a short mechanical click and solving plays a small rising chime — both synthesized live with the Web Audio API, no sound files involved.
 
 ## How it works
 
@@ -30,5 +31,6 @@ The HUD tracks your move count and a timer (starts on your first turn), and show
 - **Solve** doesn't run a cube-solving algorithm — it replays every recorded move (scramble included) in reverse with the direction flipped, an exact undo stack, so it always lands on solved regardless of how the cube got scrambled.
 - **Turn detection**: a grabbed face can only spin about the two axes lying in its own plane, ±90° each — 4 possible turns. For each candidate axis it predicts, in 2D screen space, which way a point on that face would move under a small positive rotation, then picks whichever prediction best matches your actual drag direction; the sign of that match gives clockwise vs. counter-clockwise. One comparison, resolved the instant your drag clears a small pixel threshold.
 - **Materials** are brushed metal: `MeshPhysicalMaterial` with high metalness, an anisotropic highlight, and a procedurally generated brush-grain bump map, lit by a soft top/bottom `RectAreaLight` rig plus a procedural studio environment map for reflections.
+- **Sound** is synthesized, not sampled: each click is a short bandpassed noise burst plus a low sine "thock," and the solve chime is a four-note triangle-wave arpeggio — all built from `AudioContext` nodes on the fly.
 
 See [`CLAUDE.md`](CLAUDE.md) for a fuller architecture breakdown if you're digging into the code.

@@ -165,6 +165,45 @@
     text-transform:uppercase;
   }
 
+  /* ---- sound toggle, beneath the stat panel ---- */
+  #sound-toggle{
+    position:fixed;
+    z-index:10;
+    top:6.7rem; right:2.8rem;
+    display:flex;
+    align-items:center;
+    gap:0.55em;
+    font-family:'Space Mono', monospace;
+    font-size:0.6rem;
+    letter-spacing:0.22em;
+    text-transform:uppercase;
+    color:var(--paper-dim);
+    background:transparent;
+    border:1px solid var(--line);
+    padding:0.55rem 0.9rem;
+    cursor:pointer;
+    transition: border-color 220ms ease, color 220ms ease;
+    animation: fade-down 900ms cubic-bezier(.16,1,.3,1) both;
+    animation-delay:180ms;
+  }
+  #sound-toggle:hover{
+    border-color:var(--line-strong);
+    color:var(--paper);
+  }
+  #sound-toggle .dot{
+    width:0.45em; height:0.45em;
+    border-radius:50%;
+    background:var(--brass);
+    box-shadow:0 0 6px rgba(201,162,75,0.7);
+    transition: background 220ms ease, box-shadow 220ms ease;
+    flex:none;
+  }
+  #sound-toggle[aria-pressed="false"]{ color:var(--paper-dim); }
+  #sound-toggle[aria-pressed="false"] .dot{
+    background:var(--paper-dim);
+    box-shadow:none;
+  }
+
   /* ---- footer instructions, bottom-left ---- */
   #instructions{
     left:2.8rem; bottom:2.6rem;
@@ -270,6 +309,7 @@
     #title-block{ padding:1.6rem 0 0 1.4rem; }
     #stats{ top:1.6rem; right:1.4rem; }
     .stat{ padding:0.6rem 0.8rem; min-width:4rem; }
+    #sound-toggle{ top:5.4rem; right:1.4rem; }
     #instructions{ left:1.4rem; bottom:1.4rem; }
     #controls{ right:1.4rem; bottom:1.4rem; }
     #instructions{ display:none; }
@@ -297,6 +337,10 @@
   <div class="stat"><span class="num" id="stat-moves">0</span><span class="lbl">Moves</span></div>
   <div class="stat"><span class="num" id="stat-time">00:00</span><span class="lbl">Time</span></div>
 </div>
+
+<button id="sound-toggle" aria-pressed="true">
+  <span class="dot"></span><span id="sound-label">Sound On</span>
+</button>
 
 <div class="hud" id="instructions">
   <div><span class="k">Drag a facelet</span> — turn that layer</div>
@@ -344,7 +388,7 @@ RectAreaLightUniformsLib.init();
 const SPACING = 1.06;
 const CUBIE = 0.98;
 const STICKER_INSET = 0.82;
-const TURN_MS = 260;
+const TURN_MS = 460;
 
 const COLORS = {
   U: 0xf4f1e8, // up    — white
@@ -355,6 +399,82 @@ const COLORS = {
   B: 0x2f9e52, // back  — green
 };
 const AXIS_VEC = { x: new THREE.Vector3(1,0,0), y: new THREE.Vector3(0,1,0), z: new THREE.Vector3(0,0,1) };
+
+// ---------------------------------------------------------------
+// audio — synthesized with the Web Audio API, no sound files. A turn
+// plays a short mechanical "click" (bandpassed noise burst + a low sine
+// "thock"); solving plays a small rising chime. Browsers require audio
+// to start from a real user gesture, so the AudioContext is created/
+// resumed lazily on the first pointerdown or button click.
+// ---------------------------------------------------------------
+let soundEnabled = true;
+let audioCtx = null;
+function ensureAudio(){
+  if(!soundEnabled) return;
+  if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if(audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+function playClick(pitch = 1){
+  if(!soundEnabled || !audioCtx) return;
+  const ctx = audioCtx;
+  const now = ctx.currentTime;
+
+  // broadband transient — the "click" texture of plastic snapping into place
+  const len = Math.floor(ctx.sampleRate * 0.035);
+  const buffer = ctx.createBuffer(1, len, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for(let i = 0; i < len; i++) data[i] = (Math.random()*2 - 1) * Math.pow(1 - i/len, 3);
+  const noise = ctx.createBufferSource();
+  noise.buffer = buffer;
+
+  const bandpass = ctx.createBiquadFilter();
+  bandpass.type = 'bandpass';
+  bandpass.frequency.value = 2200 * pitch;
+  bandpass.Q.value = 1.1;
+
+  const noiseGain = ctx.createGain();
+  noiseGain.gain.setValueAtTime(0.3, now);
+  noiseGain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+
+  noise.connect(bandpass).connect(noiseGain).connect(ctx.destination);
+  noise.start(now);
+  noise.stop(now + 0.05);
+
+  // low "thock" body for weight
+  const osc = ctx.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(190 * pitch, now);
+  osc.frequency.exponentialRampToValueAtTime(95 * pitch, now + 0.045);
+  const oscGain = ctx.createGain();
+  oscGain.gain.setValueAtTime(0.22, now);
+  oscGain.gain.exponentialRampToValueAtTime(0.001, now + 0.07);
+  osc.connect(oscGain).connect(ctx.destination);
+  osc.start(now);
+  osc.stop(now + 0.08);
+}
+
+function playSolvedChime(){
+  if(!soundEnabled) return;
+  ensureAudio();
+  if(!audioCtx) return;
+  const ctx = audioCtx;
+  const now = ctx.currentTime;
+  const notes = [523.25, 659.25, 783.99, 1046.5]; // C5 – E5 – G5 – C6
+  notes.forEach((freq, i) => {
+    const t = now + i * 0.1;
+    const osc = ctx.createOscillator();
+    osc.type = 'triangle';
+    osc.frequency.value = freq;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(0.16, t + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(t);
+    osc.stop(t + 0.6);
+  });
+}
 
 // ---------------------------------------------------------------
 // renderer / scene / camera
@@ -642,6 +762,7 @@ function rotateLayer(axis, layerValue, dir, { countMove=true, duration=TURN_MS, 
 
     const targetAngle = dir * Math.PI/2;
     const start = performance.now();
+    playClick(0.92 + Math.random()*0.16);
 
     function ease(t){ return 1 - Math.pow(1-t, 3); }
 
@@ -681,7 +802,7 @@ async function solveCube(){
   const moves = history.splice(0, history.length).reverse();
   updateSolveButtonState();
   for(const m of moves){
-    await rotateLayer(m.axis, m.layerValue, -m.dir, { countMove:false, record:false, duration:150 });
+    await rotateLayer(m.axis, m.layerValue, -m.dir, { countMove:false, record:false, duration:230 });
   }
   checkSolved();
 }
@@ -745,6 +866,7 @@ function onSolved(){
   solvedShown = true;
   stopTimer();
   document.getElementById('solved').classList.add('show');
+  playSolvedChime();
 }
 function clearSolvedBanner(){
   solvedShown = false;
@@ -822,6 +944,7 @@ function pickCubie(ev){
 }
 
 renderer.domElement.addEventListener('pointerdown', (ev) => {
+  ensureAudio();
   const pick = pickCubie(ev);
   if(pick){
     drag = {
@@ -924,23 +1047,26 @@ async function scramble(n=22){
     const axis = AXES[Math.floor(Math.random()*3)];
     const layerValue = [-1,0,1][Math.floor(Math.random()*3)];
     const dir = Math.random() < 0.5 ? 1 : -1;
-    await rotateLayer(axis, layerValue, dir, { countMove:false, duration:140 });
+    await rotateLayer(axis, layerValue, dir, { countMove:false, duration:210 });
   }
 }
 
 document.getElementById('btn-scramble').addEventListener('click', () => {
+  ensureAudio();
   if(animating) return;
   animating = true;
   scramble().finally(() => { animating = false; });
 });
 
 document.getElementById('btn-solve').addEventListener('click', () => {
+  ensureAudio();
   if(animating || history.length === 0) return;
   animating = true;
   solveCube().finally(() => { animating = false; });
 });
 
 document.getElementById('btn-reset').addEventListener('click', () => {
+  ensureAudio();
   if(animating) return;
   buildCube();
   patchAllNormals();
@@ -948,6 +1074,14 @@ document.getElementById('btn-reset').addEventListener('click', () => {
   resetStats();
   history.length = 0;
   updateSolveButtonState();
+});
+
+const soundToggle = document.getElementById('sound-toggle');
+soundToggle.addEventListener('click', () => {
+  soundEnabled = !soundEnabled;
+  soundToggle.setAttribute('aria-pressed', String(soundEnabled));
+  document.getElementById('sound-label').textContent = soundEnabled ? 'Sound On' : 'Sound Off';
+  if(soundEnabled) ensureAudio();
 });
 
 function patchAllNormals(){
