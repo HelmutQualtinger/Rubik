@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A single self-contained `index.html` implementing a fully interactive 3x3x3 Rubik's Cube with Three.js (loaded via CDN + import map — no build step, no package.json, no dependencies to install). Open the file directly in a browser to run it.
 
+`social-preview.png` (1200×630, repo root) is the Open Graph / Twitter card image referenced by absolute URL in `index.html`'s `<head>` (`og:image`/`twitter:image`, pointed at the GitHub Pages URL). It's a plain screenshot of the app, not hand-designed — regenerate it by rendering `index.html` at a 1200×630 viewport (2x device scale looks best, then downsample back to 1200×630) after any visual redesign, the same way `screenshot.png` is refreshed for the README. The favicon is a small inline `data:image/svg+xml` in `<link rel="icon">` (an isometric 3-face cube in the app's own U/F/R sticker colors) — no separate icon file.
+
 ## Development
 
 - Run: open `index.html` in any modern browser (or `python3 -m http.server` and visit it — needed only if testing module/CORS behavior, plain `file://` works fine here since Three.js is loaded from a CDN import map).
