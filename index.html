@@ -529,36 +529,50 @@ controls.autoRotate = true;
 controls.autoRotateSpeed = 0.6;
 controls.target.set(0,0,0);
 
-// camera must be part of the scene graph for lights parented to it (below)
-// to be picked up by the renderer's light traversal.
-scene.add(camera);
+// Captured once, right after OrbitControls has applied its initial
+// look-at — used by the light rig below to track how much the camera has
+// orbited *horizontally* since setup.
+const initialAzimuth = controls.getAzimuthalAngle();
 
 // ---------------------------------------------------------------
 // lighting — top + bottom soft-box rig (diffuse, no hard hotspots)
 // ---------------------------------------------------------------
 scene.add(new THREE.HemisphereLight(0xfdf6e8, 0x1b1712, 1.0));
 
-// The soft-box rig is parented to the camera (world transform preserved via
-// attach()) rather than the scene, so it turns with the view instead of
-// sweeping across the cube's brushed-metal faces as OrbitControls orbits the
-// camera (manual drag or autoRotate) — otherwise the highlight visibly slides
-// across the cube, reading as the light itself moving. The grounding `sun`
-// and ambient hemisphere light stay scene-fixed so the floor shadow doesn't
-// swing around with the camera.
+// The soft-box rig sits in its own group, at the same distance from the
+// cube it was originally authored at (important: RectAreaLight falloff is
+// steep, so pulling these in close — e.g. by parenting them rigidly to the
+// camera — makes same-colored stickers read as wildly different brightness
+// depending on their angle/distance to the light). Each frame in animate(),
+// lightRig's Y rotation is set to track the camera's azimuthal orbit angle
+// (horizontal spin — both manual left/right drag and autoRotate, which is
+// azimuth-only) so the rig turns with the view instead of the highlight
+// sweeping across the cube's faces. Only azimuth is tracked, deliberately
+// not the camera's full orientation: rotating the rig to match *every* axis
+// of camera movement (including vertical/polar orbiting) lets the strong
+// overhead key light swing away from "mostly overhead" and glare straight
+// into whichever face happens to be facing it, blowing that face's colors
+// out to pastel — tracking azimuth only keeps boxTop's downward component
+// intact for every camera position. The grounding `sun` and ambient
+// hemisphere light stay scene-fixed so the floor shadow doesn't swing
+// around with the camera.
+const lightRig = new THREE.Group();
+scene.add(lightRig);
+
 const boxTop = new THREE.RectAreaLight(0xfff5e2, 8, 9, 9);
 boxTop.position.set(0.5, 8, 1.5);
 boxTop.lookAt(0, 0, 0);
-camera.attach(boxTop);
+lightRig.add(boxTop);
 
 const boxBottom = new THREE.RectAreaLight(0xc9a24b, 4.5, 9, 9);
 boxBottom.position.set(-0.5, -7.5, 0.5);
 boxBottom.lookAt(0, 0, 0);
-camera.attach(boxBottom);
+lightRig.add(boxBottom);
 
 const sideKick = new THREE.RectAreaLight(0x7fa0e0, 1.2, 6, 6);
 sideKick.position.set(-6, 1, -3);
 sideKick.lookAt(0, 0, 0);
-camera.attach(sideKick);
+lightRig.add(sideKick);
 
 // low, wide directional purely to ground the piece with a very soft shadow
 const sun = new THREE.DirectionalLight(0xfff3df, 0.5);
@@ -1200,6 +1214,7 @@ onResize();
 function animate(){
   requestAnimationFrame(animate);
   controls.update();
+  lightRig.rotation.y = controls.getAzimuthalAngle() - initialAzimuth;
   renderer.render(scene, camera);
 }
 animate();
